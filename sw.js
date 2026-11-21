@@ -1,5 +1,5 @@
 /* AXION Combustible · Service worker: la app abre sin señal. Cambie VERSION al publicar una mejora. */
-var VERSION = 'comb-v2';
+var VERSION = 'comb-v3';
 var ARCHIVOS = ['./', 'index.html', 'styles.css', 'config.js', 'analisis.js', 'graficos.js', 'app.js', 'icono.svg', 'icono-192.png', 'icono-512.png',
   'icono-maskable-512.png', 'apple-touch-icon.png', 'manifest.webmanifest', 'plantilla.html'];
 

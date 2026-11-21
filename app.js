@@ -604,6 +604,34 @@
     });
   }
 
+  /**
+   * Pide la lectura con IA. Si la respuesta se pierde (Google corta los pedidos largos) o tarda, consulta cada 5 s
+   * si la lectura ya quedó guardada en el servidor, hasta 6 minutos.
+   */
+  function leerConEspera(hojaID, obra) {
+    var t0 = Date.now(), terminado = false;
+    var consultar = function () {
+      return new Promise(function (ok) { setTimeout(ok, 5000); }).then(function () {
+        if (terminado) return null;
+        return api('estadoLectura', { HojaID: hojaID }).catch(function () { return { listo: false }; }).then(function (s) {
+          if (terminado) return null;
+          if (s && s.listo) return s;
+          if (Date.now() - t0 > 6 * 60000) { var e = new Error('La lectura está tardando demasiado.'); e.codigo = 'TIEMPO'; throw e; }
+          return consultar();
+        });
+      });
+    };
+    var directo = api('leerHoja', { HojaID: hojaID, ObraID: obra }).then(function (r) { return r; }, function (e) {
+      if (e.codigo && e.codigo !== 'RED') throw e;   // error real del servidor: se informa
+      return null;                                    // respuesta perdida: se sigue consultando
+    });
+    // lo que llegue primero: la respuesta directa o la lectura ya guardada
+    return new Promise(function (ok, mal) {
+      directo.then(function (r) { if (r && !terminado) { terminado = true; ok(r); } }, function (e) { if (!terminado) { terminado = true; mal(e); } });
+      setTimeout(function () { consultar().then(function (s) { if (s && !terminado) { terminado = true; ok(s); } }, function (e) { if (!terminado) { terminado = true; mal(e); } }); }, 20000);
+    });
+  }
+
   function alElegirFoto(ev) {
     var f = ev.target.files && ev.target.files[0];
     ev.target.value = '';
@@ -615,15 +643,21 @@
       render();
       var t0 = Date.now(), msgs = ['Enviando la foto', 'Leyendo el encabezado', 'Transcribiendo las filas', 'Revisando números dudosos', 'Comparando con el catálogo de equipos', 'Validando horómetros con el historial'];
       var tm = setInterval(function () { var p = $('#pTxt'); if (p) p.textContent = msgs[Math.min(msgs.length - 1, Math.floor((Date.now() - t0) / 6000))]; }, 1000);
-      api('leerHoja', { imagen: foto.b64, mime: 'image/jpeg', ObraID: obra }).then(function (r) {
+      // 1) se guarda la foto (rápido) · 2) se lee con IA; si Google pierde la respuesta larga, se pregunta hasta que esté lista
+      var hojaID = null;
+      api('subirHoja', { imagen: foto.b64, mime: 'image/jpeg', ObraID: obra }).then(function (r) {
+        hojaID = r.HojaID; fotos[hojaID] = foto.url; S.lect.HojaID = hojaID;
+        return leerConEspera(hojaID, obra);
+      }).then(function (r) {
         clearInterval(tm);
-        fotos[r.HojaID] = foto.url;
         if (r.aviso) aviso(r.aviso, true);
-        iniciarRevision(r.HojaID, r.lectura, obra, foto.url);
+        iniciarRevision(r.HojaID, r.lectura, r.ObraID || obra, foto.url);
       }).catch(function (e) {
         clearInterval(tm);
-        S.lect = null; ir('#/nueva');
-        aviso(e.message, true);
+        if (hojaID) {   // la foto ya está guardada: se puede completar a mano o volver a leer desde la hoja
+          aviso(e.message + ' La foto quedó guardada: puede volver a leerla.', true);
+          iniciarRevision(hojaID, null, obra, foto.url);
+        } else { S.lect = null; ir('#/nueva'); aviso(e.message, true); }
       });
     }).catch(function (e) { aviso(e.message, true); });
   }
@@ -747,12 +781,12 @@
     var co = $('#cambiarObra'); if (co) co.onclick = function () {
       var nueva = co.getAttribute('data-obra-id');
       co.disabled = true; co.innerHTML = '<span class="girar"></span> Leyendo con los equipos de la otra obra…';
-      api('releerHoja', { HojaID: L.HojaID, ObraID: nueva }).then(function (r) { iniciarRevision(L.HojaID, r.lectura, r.ObraID, L.url); aviso('Obra cambiada y hoja leída de nuevo'); })
+      leerConEspera(L.HojaID, nueva).then(function (r) { if (!r.lectura) throw new Error(r.aviso || 'No se pudo leer la hoja.'); iniciarRevision(L.HojaID, r.lectura, r.ObraID || nueva, L.url); aviso('Obra cambiada y hoja leída de nuevo'); })
         .catch(function (e) { aviso(e.message, true); co.disabled = false; });
     };
     var rl = $('#releer'); if (rl) rl.onclick = function () {
       rl.disabled = true; rl.innerHTML = '<span class="girar"></span> Leyendo…';
-      api('releerHoja', { HojaID: L.HojaID }).then(function (r) { iniciarRevision(L.HojaID, r.lectura, L.obra, L.url); aviso('Lectura actualizada'); }).catch(function (e) { aviso(e.message, true); rl.disabled = false; rl.textContent = 'Volver a leer con IA'; });
+      leerConEspera(L.HojaID, L.obra).then(function (r) { if (!r.lectura) throw new Error(r.aviso || 'No se pudo leer la hoja.'); iniciarRevision(L.HojaID, r.lectura, r.ObraID || L.obra, L.url); aviso('Lectura actualizada'); }).catch(function (e) { aviso(e.message, true); rl.disabled = false; rl.textContent = 'Volver a leer con IA'; });
     };
     function ref(id) {
       var m = /^f(\d+)(\w+)$/.exec(id);
